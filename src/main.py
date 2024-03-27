@@ -5,7 +5,10 @@ import os
 import secrets
 import requests
 import pymysql
-
+import sqlalchemy
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.orm import Session
+from sqlalchemy import text
 
 mailgun_domain = os.environ.get("MAILGUN_DOMAIN")
 mailgun_api_key = os.environ.get("MAILGUN_API_KEY")
@@ -15,6 +18,8 @@ db_hostname = os.environ.get("DB_HOSTNAME")
 db_username = os.environ.get("DB_USERNAME")
 db_password = os.environ.get("DB_PASSWORD")
 db_database_name = os.environ.get("DB_DATABASE_NAME")
+db_mysql_port = os.environ.get("DB_PORT")
+
 
 def generate_unique_verification_code(username):
     """
@@ -36,59 +41,6 @@ def generate_unique_verification_code(username):
     combined_string = f"{username}-{hashlib.sha256(username.encode('utf-8')).hexdigest()}"
     # Encode the combined string and verification code for URL safety
     return f"{base64.urlsafe_b64encode(combined_string.encode('utf-8')).decode('utf-8')}/{verification_code}"
-
-def track_email(verification_link, username):
-    """
-    Tracks information about the sent verification email.
-
-    This function attempts to create a new `UserVerification` model entry
-    with the provided username and verification link. It handles potential
-    errors like user not found.
-
-    Args:
-        username (str): The username of the user.
-        verification_link (str): The verification link sent to the user.
-    """
-
-    try:
-        # Connect to the database
-        connection = pymysql.connect(
-            host=db_hostname,
-            user=db_username,
-            password=db_password,
-            database=db_database_name,
-            cursorclass=pymysql.cursors.DictCursor
-        )
-
-        with connection.cursor() as cursor:
-            # Ensure the user exists
-            cursor.execute("SELECT * FROM myapp_user WHERE username = %s", (username,))
-            user_row = cursor.fetchone()
-
-            if user_row:
-                user_id = user_row['id']
-
-                # Extract verification code from link
-                verification_code = verification_link.split('/')[1]
-
-                # Insert verification data
-                cursor.execute(
-                    "INSERT INTO myapp_userverification (user_id, verification_code) VALUES (%s, %s)",
-                    (user_id, verification_code)
-                )
-                connection.commit()
-
-                print(f'Email sent to {username} tracked with verification code: {verification_code}')
-            else:
-                print(f'User "{username}" not found in the database.')
-
-        # Check for connection within the try block
-        if connection:
-            connection.close()
-
-    except Exception as e:
-        print(f'An error occurred while tracking email: {e}')
-
 
 
 def send_verification_email(event, context):
@@ -140,6 +92,76 @@ def send_verification_email(event, context):
 
     if response.status_code == 200:
         print(f'Email sent to {username}')
-        track_email(verification_code, username)
+        engine = connect_tcp_socket()
+        track_email(verification_code, username, engine)
     else:
         print(f'Failed to send email: {response.text}')
+
+
+def track_email(verification_link, username, engine):
+    """
+    Tracks information about the sent verification email.
+
+    This function attempts to create a new `UserVerification` model entry
+    with the provided username and verification link. It handles potential
+    errors like user not found.
+
+    Args:
+        username (str): The username of the user.
+        verification_link (str): The verification link sent to the user.
+        engine (sqlalchemy.engine.base.Engine): The database engine connection.
+    """
+
+    try:
+        with Session(engine) as session:
+            # Check if user exists with text() function
+            user_query = text(f"SELECT * FROM myapp_user WHERE username = :username")
+            user_result = session.execute(user_query, params={'username': username}).fetchone()
+            print(f"user_result: {user_result}")
+            if user_result:
+                user_id = user_result[1]  # Assuming the ID is the first column (index 0)
+                print(f"user_id: {user_id}")
+                # Extract verification code from link
+                verification_code = verification_link.split('/')[1]
+                print(f"verification_code: {verification_code}")
+                # Insert data into userverification table (unchanged)
+                insert_query = text(f"INSERT INTO myapp_userverification (user_id, verification_code) VALUES ({user_id}, '{verification_code}')"
+)
+                session.execute(
+                    insert_query
+                )
+                session.commit()
+
+                print(f'Email sent to {username} tracked with verification code: {verification_code}')
+            else:
+                print(f'User "{username}" not found in the database.')
+
+    except IntegrityError as e:
+        # Handle potential database constraint violations
+        print(f'An error occurred while tracking email (IntegrityError): {e}')
+    except Exception as e:
+        print(f'An error occurred while tracking email: {e}')
+
+
+def connect_tcp_socket() -> sqlalchemy.engine.base.Engine:
+    """Initializes a TCP connection pool for a Cloud SQL instance of MySQL."""
+    db_host = db_hostname
+    db_user = db_username
+    db_pass = db_password
+    db_name = db_database_name
+    db_port = db_mysql_port
+
+    myurl = sqlalchemy.engine.url.URL.create(
+            drivername="mysql+pymysql",
+            username=db_user,
+            password=db_pass,
+            host=db_host,
+            port=db_port,
+            database=db_name,
+        )
+    # Create engine
+    engine = sqlalchemy.create_engine(
+        myurl,
+        pool_pre_ping=True
+    )
+    return engine
