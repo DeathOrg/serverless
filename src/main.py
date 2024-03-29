@@ -44,124 +44,107 @@ def generate_unique_verification_code(username):
 
 
 def send_verification_email(event, context):
-    # Decode the Pub/Sub message
-    pubsub_message = base64.b64decode(event['data']).decode('utf-8')
-    user_data = json.loads(pubsub_message)
+    try:
+        # Decode the Pub/Sub message
+        pubsub_message = base64.b64decode(event['data']).decode('utf-8')
+        user_data = json.loads(pubsub_message)
 
-    # Extract necessary data from the Pub/Sub message
-    first_name = user_data.get('first_name')
-    username = user_data.get('username')
-    hostname = user_data.get('hostname')
-    verification_api = user_data.get('verification_api')
+        # Extract necessary data from the Pub/Sub message
+        first_name = user_data.get('first_name')
+        username = user_data.get('username')
+        hostname = user_data.get('hostname')
+        verification_api = user_data.get('verification_api')
 
-    verification_code = generate_unique_verification_code(username)
-    verification_link = f"http://{hostname}:8000/{verification_api}?code={verification_code}"
-    company_name = "sourabhk"
-    from_email = f"noreply@{company_name}.com"
-    subject = f"Welcome to {company_name}! Verify Your Email to Get Started"
+        verification_code = generate_unique_verification_code(username)
+        verification_link = f"http://{hostname}:8000/{verification_api}?code={verification_code}"
+        company_name = "sourabhk"
+        from_email = f"noreply@{company_name}.com"
+        subject = f"Welcome to {company_name}! Verify Your Email to Get Started"
 
-    # Plain text version (optional but recommended)
-    text_body = f"Welcome {first_name},\n" \
-                f"Thank you for signing up with {company_name}! \n" \
-                f"To verify your email address and unlock all features, please click the link below: \n" \
-                f"{verification_link}"
+        # Plain text version (optional but recommended)
+        text_body = f"Welcome {first_name},\n" \
+                    f"Thank you for signing up with {company_name}! \n" \
+                    f"To verify your email address and unlock all features, please click the link below: \n" \
+                    f"{verification_link}"
 
-    # HTML version with call to action button
-    html_body = f"""\
-      <html>
-      <body>
-        <p>Welcome {first_name},</p>
-        <p>Thank you for signing up with {company_name}! To verify your email address and unlock all features, please click the button below:</p>
-        <a href="{verification_link}">Verify Your Email</a>
-      </body>
-      </html>
-      """
+        # HTML version with call to action button
+        html_body = f"""\
+          <html>
+          <body>
+            <p>Welcome {first_name},</p>
+            <p>Thank you for signing up with {company_name}! To verify your email address and unlock all features, please click the button below:</p>
+            <a href="{verification_link}">Verify Your Email</a>
+          </body>
+          </html>
+          """
 
-    # Send email using Mailgun
-    response = requests.post(
-        f'https://api.mailgun.net/v3/{mailgun_domain}/messages',
-        auth=('api', mailgun_api_key),
-        data={
-            'from': from_email,
-            'to': username,
-            'subject': subject,
-            # 'text': text_body,
-            'html': html_body
-        }
-    )
+        # Send email using Mailgun
+        response = requests.post(
+            f'https://api.mailgun.net/v3/{mailgun_domain}/messages',
+            auth=('api', mailgun_api_key),
+            data={
+                'from': from_email,
+                'to': username,
+                'subject': subject,
+                # 'text': text_body,
+                'html': html_body
+            }
+        )
 
-    if response.status_code == 200:
-        print(f'Email sent to {username}')
-        engine = connect_tcp_socket()
-        track_email(verification_code, username, engine)
-    else:
-        print(f'Failed to send email: {response.text}')
+        if response.status_code == 200:
+            print(f'Email sent to {username}')
+            engine = connect_tcp_socket()
+            track_email(verification_code, username, engine)
+        else:
+            print(f'Failed to send email: {response.text}')
+            # Log error or handle the failure appropriately
+    except Exception as e:
+        print(f'Error sending email: {e}')
+        # Log the error for debugging
 
 
 def track_email(verification_link, username, engine):
-    """
-    Tracks information about the sent verification email.
-
-    This function attempts to create a new `UserVerification` model entry
-    with the provided username and verification link. It handles potential
-    errors like user not found.
-
-    Args:
-        username (str): The username of the user.
-        verification_link (str): The verification link sent to the user.
-        engine (sqlalchemy.engine.base.Engine): The database engine connection.
-    """
-
     try:
         with Session(engine) as session:
             # Check if user exists with text() function
             user_query = text(f"SELECT * FROM myapp_user WHERE username = :username")
             user_result = session.execute(user_query, params={'username': username}).fetchone()
-            print(f"user_result: {user_result}")
             if user_result:
-                user_id = user_result[1]  # Assuming the ID is the first column (index 0)
-                print(f"user_id: {user_id}")
-                # Extract verification code from link
+                user_id = user_result[1]
                 verification_code = verification_link.split('/')[1]
-                print(f"verification_code: {verification_code}")
-                # Insert data into userverification table (unchanged)
-                insert_query = text(f"INSERT INTO myapp_userverification (user_id, verification_code) VALUES ({user_id}, '{verification_code}')"
-)
-                session.execute(
-                    insert_query
-                )
+                insert_query = text("""
+                    INSERT INTO myapp_userverification 
+                    (user_id, verification_code, sent_at, expires_at, is_used) 
+                    VALUES 
+                    (:user_id, :verification_code, NOW(), DATE_ADD(NOW(), INTERVAL 2 MINUTE), FALSE)
+                """)
+                session.execute(insert_query, {'user_id': user_id, 'verification_code': verification_code})
                 session.commit()
 
                 print(f'Email sent to {username} tracked with verification code: {verification_code}')
             else:
                 print(f'User "{username}" not found in the database.')
-
     except IntegrityError as e:
-        # Handle potential database constraint violations
-        print(f'An error occurred while tracking email (IntegrityError): {e}')
+        print(f'Error occurred while tracking email (IntegrityError): {e}')
     except Exception as e:
-        print(f'An error occurred while tracking email: {e}')
+        print(f'Error occurred while tracking email: {e}')
 
 
 def connect_tcp_socket() -> sqlalchemy.engine.base.Engine:
-    """Initializes a TCP connection pool for a Cloud SQL instance of MySQL."""
-    db_host = db_hostname
-    db_user = db_username
-    db_pass = db_password
-    db_name = db_database_name
-    db_port = db_mysql_port
-
-    myurl = sqlalchemy.engine.url.URL.create(
+    try:
+        myurl = sqlalchemy.engine.url.URL.create(
             drivername="mysql+pymysql",
-            username=db_user,
-            password=db_pass,
-            host=db_host,
-            port=db_port,
-            database=db_name,
+            username=db_username,
+            password=db_password,
+            host=db_hostname,
+            port=db_mysql_port,
+            database=db_database_name,
         )
-    # Create engine
-    engine = sqlalchemy.create_engine(
-        myurl,
-        pool_pre_ping=True
-    )
-    return engine
+        # Create engine
+        engine = sqlalchemy.create_engine(
+            myurl,
+            pool_pre_ping=True
+        )
+        return engine
+    except Exception as e:
+        print(f'Error connecting to the database: {e}')
