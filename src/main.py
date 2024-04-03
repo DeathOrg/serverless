@@ -56,7 +56,7 @@ def send_verification_email(event, context):
         verification_api = user_data.get('verification_api')
 
         verification_code = generate_unique_verification_code(username)
-        verification_link = f"http://{hostname}:8000/{verification_api}?code={verification_code}"
+        verification_link = f"https://{hostname}/{verification_api}?code={verification_code}"
         company_name = "sourabhk"
         from_email = f"noreply@{company_name}.com"
         subject = f"Welcome to {company_name}! Verify Your Email to Get Started"
